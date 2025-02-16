@@ -1,6 +1,5 @@
 'use client'
 
-
 import { useState, useEffect, useRef } from "react"
 import { enqueueSnackbar } from 'notistack'
 import { IoMic, IoMicOff, IoKey, IoSettings, IoInformationCircle } from "react-icons/io5"
@@ -10,8 +9,8 @@ import { AnimatePresence } from 'framer-motion'
 import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatMessage } from '@/components/chat/ChatMessage'
 import { Container } from '@/components/ui/Container'
-import { ToolDefinitionType, availableTools } from '@/lib/tools'
-import { initializeCollection, searchPatient } from '@/lib/qdrant'
+import { ToolDefinition, VoiceToolDefinition, useToolDefinitions } from '@/lib/tools'
+import { initializeCollection, searchPatient, getPatientById } from '@/lib/qdrant'
 import clsx from 'clsx'
 
 declare global {
@@ -52,7 +51,7 @@ type SessionResourceType = {
   output_audio_format?: AudioFormatType
   input_audio_transcription?: AudioTranscriptionType | null
   turn_detection?: TurnDetectionServerVadType | null
-  tools?: ToolDefinitionType[]
+  tools?: VoiceToolDefinition[]
   tool_choice?: "auto" | "none" | "required" | { type: "function"; name: string }
   temperature?: number
   max_response_output_tokens?: number | "inf"
@@ -133,40 +132,14 @@ Remember to:
 - Be clear about your limitations as an AI assistant
 - Maintain a compassionate and professional tone
 - Prioritize user privacy and confidentiality
-- Provide evidence-based information when possible`,
+- Provide evidence-based information when possible
+- Use the available tools to look up patient information when needed`,
   sender: 'bot',
   timestamp: new Date()
 }
 
-const defaultSessionConfig: SessionResourceType = {
-  modalities: ['text', 'audio'],
-  instructions: SYSTEM_MESSAGE.content,
-  voice: 'echo',  // Using a more neutral, professional voice
-  input_audio_format: 'pcm16',
-  output_audio_format: 'pcm16',
-  input_audio_transcription: {
-    model: "whisper-1"
-  },
-  turn_detection: {
-    type: 'server_vad',
-    threshold: 0.5,
-    prefix_padding_ms: 300,
-    silence_duration_ms: 200,
-  },
-  tools: availableTools,
-  tool_choice: "auto",
-  temperature: 0.7,
-  max_response_output_tokens: 4096,
-}
-
-const defaultServerVadConfig: TurnDetectionServerVadType = {
-  type: 'server_vad',
-  threshold: 0.5,
-  prefix_padding_ms: 300,
-  silence_duration_ms: 200,
-}
-
 export default function VoicePage() {
+  const { getVoiceToolDefinitions } = useToolDefinitions()
   const [apiKey, setApiKey] = useState("")
   const [isApiKeySet, setIsApiKeySet] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -427,38 +400,64 @@ export default function VoicePage() {
 
         case 'function.call':
           console.log('Function call:', data.call)
-          if (data.call.name === 'get_patient_id') {
-            try {
-              const args = JSON.parse(data.call.arguments)
-              const { firstName, lastName, dateOfBirth, medicareNo } = args;
+          try {
+            const args = JSON.parse(data.call.arguments)
+            
+            switch (data.call.name) {
+              case 'get_patient_id':
+                const { firstName, lastName, dateOfBirth, medicareNo } = args;
+                // Search for existing patient
+                const patient = await searchPatient(firstName, lastName, dateOfBirth, medicareNo);
 
-              // Search for existing patient
-              const patient = await searchPatient(firstName, lastName, dateOfBirth, medicareNo);
+                if (patient) {
+                  wsRef.current?.send(JSON.stringify({
+                    type: 'function.output',
+                    call_id: data.call.call_id,
+                    output: JSON.stringify({ 
+                      id: patient.id,
+                      message: 'Patient found.'
+                    })
+                  }));
+                } else {
+                  wsRef.current?.send(JSON.stringify({
+                    type: 'function.output',
+                    call_id: data.call.call_id,
+                    error: 'No patient record found with the provided information.'
+                  }));
+                }
+                break;
 
-              if (patient) {
+              case 'get_patient_details':
+                const patientDetails = await getPatientById(args.patientId);
+                if (patientDetails) {
+                  wsRef.current?.send(JSON.stringify({
+                    type: 'function.output',
+                    call_id: data.call.call_id,
+                    output: JSON.stringify(patientDetails)
+                  }));
+                } else {
+                  wsRef.current?.send(JSON.stringify({
+                    type: 'function.output',
+                    call_id: data.call.call_id,
+                    error: 'Patient not found with the provided ID.'
+                  }));
+                }
+                break;
+
+              default:
                 wsRef.current?.send(JSON.stringify({
                   type: 'function.output',
                   call_id: data.call.call_id,
-                  output: JSON.stringify({ 
-                    patient_id: patient.id,
-                    message: 'Patient found.'
-                  })
+                  error: `Unknown function: ${data.call.name}`
                 }));
-              } else {
-                wsRef.current?.send(JSON.stringify({
-                  type: 'function.output',
-                  call_id: data.call.call_id,
-                  error: 'No patient record found with the provided information.'
-                }));
-              }
-            } catch (error) {
-              console.error('Error handling function call:', error)
-              wsRef.current?.send(JSON.stringify({
-                type: 'function.output',
-                call_id: data.call.call_id,
-                error: 'Failed to search for patient ID'
-              }))
             }
+          } catch (error) {
+            console.error('Error handling function call:', error)
+            wsRef.current?.send(JSON.stringify({
+              type: 'function.output',
+              call_id: data.call.call_id,
+              error: `Failed to execute function ${data.call.name}: ${error}`
+            }))
           }
           break
 
@@ -467,14 +466,9 @@ export default function VoicePage() {
           break
 
         case 'input_audio_buffer.committed':
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            role: 'user',
-            content: '',
-            sender: 'user',
-            timestamp: new Date(),
-            tempId: data.item_id
-          }])
+          // Clear audio queue when audio buffer is committed
+          audioQueueRef.current = []
+          isPlayingRef.current = false
           break
 
         case 'conversation.item.input_audio_transcription.completed':
@@ -605,6 +599,10 @@ export default function VoicePage() {
 
   const startRecording = async () => {
     try {
+      // Clear the audio queue when starting a new recording
+      audioQueueRef.current = []
+      isPlayingRef.current = false
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -825,6 +823,27 @@ export default function VoicePage() {
       }
     }
   }, [])
+
+  const defaultSessionConfig: SessionResourceType = {
+    modalities: ['text', 'audio'],
+    instructions: SYSTEM_MESSAGE.content,
+    voice: 'echo',
+    input_audio_format: 'pcm16',
+    output_audio_format: 'pcm16',
+    input_audio_transcription: {
+      model: "whisper-1"
+    },
+    turn_detection: {
+      type: 'server_vad',
+      threshold: 0.5,
+      prefix_padding_ms: 300,
+      silence_duration_ms: 200,
+    },
+    tools: getVoiceToolDefinitions(),
+    tool_choice: "auto",
+    temperature: 0.7,
+    max_response_output_tokens: 4096,
+  }
 
   return (
     <Container>

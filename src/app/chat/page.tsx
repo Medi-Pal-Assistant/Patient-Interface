@@ -7,7 +7,7 @@ import { ChatMessage, Message } from '@/components/chat/ChatMessage';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { Container } from '@/components/ui/Container';
-import { availableTools } from '@/lib/tools';
+import { useToolDefinitions } from '@/lib/tools';
 import { searchPatient, getPatientById } from '@/lib/qdrant';
 
 import OpenAI from 'openai';
@@ -47,7 +47,10 @@ Remember to:
 - Use the available tools to look up patient information when needed`
 };
 
-const getChatCompletion = async (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => {
+const getChatCompletion = async (
+  messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
+  tools: any[]
+) => {
   const openai = getOpenAIClient();
   
   try {
@@ -56,7 +59,7 @@ const getChatCompletion = async (messages: { role: 'user' | 'assistant' | 'syste
       messages: [SYSTEM_MESSAGE, ...messages],
       temperature: 0.7,
       max_tokens: 1000,
-      tools: availableTools,
+      tools: tools,
       tool_choice: "auto",
     });
 
@@ -140,9 +143,10 @@ const getChatCompletion = async (messages: { role: 'user' | 'assistant' | 'syste
     console.error('Error getting chat completion:', error);
     throw error;
   }
-}; 
+};
 
 export default function ChatPage() {
+  const { getToolDefinitions } = useToolDefinitions();
   const [mounted, setMounted] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -201,8 +205,8 @@ export default function ChatPage() {
       }));
       chatMessages.push({ role: 'user', content: inputMessage });
 
-      // Get response from OpenAI
-      const response = await getChatCompletion(chatMessages);
+      // Get response from OpenAI with tools from hook
+      const response = await getChatCompletion(chatMessages, getToolDefinitions());
 
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
