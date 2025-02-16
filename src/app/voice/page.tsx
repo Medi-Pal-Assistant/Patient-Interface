@@ -10,6 +10,8 @@ import { AnimatePresence } from 'framer-motion'
 import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatMessage } from '@/components/chat/ChatMessage'
 import { Container } from '@/components/ui/Container'
+import { ToolDefinitionType, availableTools } from '@/lib/tools'
+import { initializeCollection, searchPatient } from '@/lib/qdrant'
 import clsx from 'clsx'
 
 declare global {
@@ -26,13 +28,6 @@ type Message = {
   sender: 'user' | 'bot'
   timestamp: Date
   tempId?: string
-}
-
-type ToolDefinitionType = {
-  type?: "function"
-  name: string
-  description: string
-  parameters: { [key: string]: any }
 }
 
 type AudioFormatType = "pcm16" | "g711_ulaw" | "g711_alaw"
@@ -158,6 +153,8 @@ const defaultSessionConfig: SessionResourceType = {
     prefix_padding_ms: 300,
     silence_duration_ms: 200,
   },
+  tools: availableTools,
+  tool_choice: "auto",
   temperature: 0.7,
   max_response_output_tokens: 4096,
 }
@@ -306,6 +303,20 @@ export default function VoicePage() {
     }
   }, [])
 
+  // Initialize Qdrant collection on mount
+  useEffect(() => {
+    const initQdrant = async () => {
+      try {
+        await initializeCollection();
+      } catch (error) {
+        console.error('Failed to initialize Qdrant:', error);
+        enqueueSnackbar('Failed to initialize patient database', { variant: 'error' });
+      }
+    };
+    
+    initQdrant();
+  }, []);
+
   // Cleanup function
   useEffect(() => {
     return () => {
@@ -412,6 +423,47 @@ export default function VoicePage() {
               }])
             }
           }
+          break
+
+        case 'function.call':
+          console.log('Function call:', data.call)
+          if (data.call.name === 'get_patient_id') {
+            try {
+              const args = JSON.parse(data.call.arguments)
+              const { firstName, lastName, dateOfBirth, medicareNo } = args;
+
+              // Search for existing patient
+              const patient = await searchPatient(firstName, lastName, dateOfBirth, medicareNo);
+
+              if (patient) {
+                wsRef.current?.send(JSON.stringify({
+                  type: 'function.output',
+                  call_id: data.call.call_id,
+                  output: JSON.stringify({ 
+                    patient_id: patient.id,
+                    message: 'Patient found.'
+                  })
+                }));
+              } else {
+                wsRef.current?.send(JSON.stringify({
+                  type: 'function.output',
+                  call_id: data.call.call_id,
+                  error: 'No patient record found with the provided information.'
+                }));
+              }
+            } catch (error) {
+              console.error('Error handling function call:', error)
+              wsRef.current?.send(JSON.stringify({
+                type: 'function.output',
+                call_id: data.call.call_id,
+                error: 'Failed to search for patient ID'
+              }))
+            }
+          }
+          break
+
+        case 'function.output':
+          console.log('Function output:', data.output)
           break
 
         case 'input_audio_buffer.committed':
@@ -588,7 +640,8 @@ export default function VoicePage() {
           const pcmData = event.data.pcmData
           // Convert to base64 and send
           const base64Data = btoa(
-            String.fromCharCode.apply(null, new Uint8Array(pcmData.buffer))
+            //not sure if this is legit
+            String.fromCharCode(...new Uint8Array(pcmData.buffer))
           )
 
           wsRef.current?.send(JSON.stringify({
