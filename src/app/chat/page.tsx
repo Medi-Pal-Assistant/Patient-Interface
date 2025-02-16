@@ -31,26 +31,17 @@ export default function ChatPage() {
 
   const scrollToBottom = () => {
     if (mounted && messagesEndRef.current) {
-      const messageContainer = messagesEndRef.current;
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) {
-              messageContainer.scrollIntoView({ behavior: 'smooth' });
-            }
-          });
-        },
-        { threshold: 1.0 }
-      );
-
-      observer.observe(messageContainer);
-      return () => observer.disconnect();
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
   useEffect(() => {
-    if (mounted) {
-      scrollToBottom();
+    if (mounted && messages.length > 0) {
+      // Only scroll on new messages
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.timestamp.getTime() > Date.now() - 1000) {
+        scrollToBottom();
+      }
     }
   }, [messages, mounted]);
 
@@ -113,20 +104,22 @@ export default function ChatPage() {
         avatarText="MP"
       />
 
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-        <AnimatePresence initial={mounted}>
-          {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} />
-          ))}
-        </AnimatePresence>
-        
-        {isTyping && <TypingIndicator />}
-        {error && (
-          <div className="p-4 bg-red-50 text-red-600 rounded-lg">
-            {error}
-          </div>
-        )}
-        <div ref={messagesEndRef} className="h-px" />
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-4 py-6 space-y-4">
+          <AnimatePresence initial={mounted}>
+            {messages.map((message) => (
+              <ChatMessage key={message.id} message={message} />
+            ))}
+          </AnimatePresence>
+          
+          {isTyping && <TypingIndicator />}
+          {error && (
+            <div className="p-4 bg-red-50 text-red-600 rounded-lg">
+              {error}
+            </div>
+          )}
+          <div ref={messagesEndRef} className="h-px" />
+        </div>
       </div>
 
       <ChatInput
