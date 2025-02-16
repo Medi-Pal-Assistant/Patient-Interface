@@ -1,50 +1,27 @@
-import { QdrantClient } from '@qdrant/js-client-rest';
+// Remove the QdrantClient import and initialization
 
 const COLLECTION_NAME = 'patient_demographics';
-
-// Initialize Qdrant client
-export const qdrantClient = new QdrantClient({
-  url: process.env.NEXT_PUBLIC_QDRANT_URL,
-  apiKey: process.env.NEXT_PUBLIC_QDRANT_API_KEY,
-});
 
 // Initialize collection if it doesn't exist
 export const initializeCollection = async () => {
   try {
-    const collections = await qdrantClient.getCollections();
-    const collectionExists = collections.collections.some(
-      (collection) => collection.name === COLLECTION_NAME
-    );
+    console.log('Attempting to initialize Qdrant collection...');
+    const response = await fetch('/api/qdrant', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'initializeCollection' }),
+    });
 
-    if (!collectionExists) {
-      await qdrantClient.createCollection(COLLECTION_NAME, {
-        vectors: {
-          size: 1, // Using minimal vector size since we're only using payload
-          distance: 'Cosine',
-        },
-      });
-
-      // Create payload indexes for common search fields
-      await qdrantClient.createPayloadIndex(COLLECTION_NAME, {
-        field_name: 'first_name',
-        field_schema: 'keyword',
-      });
-
-      await qdrantClient.createPayloadIndex(COLLECTION_NAME, {
-        field_name: 'last_name',
-        field_schema: 'keyword',
-      });
-
-      await qdrantClient.createPayloadIndex(COLLECTION_NAME, {
-        field_name: 'birthdate',
-        field_schema: 'keyword',
-      });
-
-      await qdrantClient.createPayloadIndex(COLLECTION_NAME, {
-        field_name: 'medicare_no',
-        field_schema: 'keyword',
-      });
+    if (!response.ok) {
+      console.error('Failed to initialize Qdrant collection:', response.statusText);
+      throw new Error('Failed to initialize collection');
     }
+
+    const result = await response.json();
+    console.log('Qdrant initialization result:', result);
+    return result;
   } catch (error) {
     console.error('Error initializing Qdrant collection:', error);
     throw error;
@@ -59,47 +36,31 @@ export const searchPatient = async (
   medicare_no?: string
 ) => {
   try {
-    const mustConditions = [
-      {
-        key: 'first_name',
-        match: { text: firstName },
+    const response = await fetch('/api/qdrant', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
-      {
-        key: 'last_name',
-        match: { text: lastName },
-      },
-      {
-        key: 'birthdate',
-        match: { text: birthdate },
-      },
-    ];
-
-    if (medicare_no) {
-      mustConditions.push({
-        key: 'medicare_no',
-        match: { text: medicare_no },
-      });
-    }
-
-    const searchResult = await qdrantClient.scroll(COLLECTION_NAME, {
-      filter: {
-        must: mustConditions,
-      },
-      limit: 1,
+      body: JSON.stringify({
+        action: 'searchPatient',
+        firstName,
+        lastName,
+        birthdate,
+        medicare_no,
+      }),
     });
 
-    if (searchResult.points.length > 0) {
-      const payload = searchResult.points[0].payload as unknown;
-      return payload as Patient;
+    if (!response.ok) {
+      throw new Error('Failed to search patient');
     }
 
-    return null;
+    const result = await response.json();
+    return result as Patient | null;
   } catch (error) {
     console.error('Error searching for patient:', error);
     throw error;
   }
 };
-
 
 // Patient interface
 export interface Patient {
@@ -136,18 +97,23 @@ export interface Patient {
 // Function to get a patient by ID
 export const getPatientById = async (patientId: string): Promise<Patient | null> => {
   try {
-    const result = await qdrantClient.retrieve(COLLECTION_NAME, {
-      ids: [patientId],
-      with_payload: true,
-      with_vector: true
+    const response = await fetch('/api/qdrant', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        action: 'getPatientById',
+        patientId,
+      }),
     });
 
-    if (result && result.length > 0) {
-      const payload = result[0].payload as unknown;
-      return payload as Patient;
+    if (!response.ok) {
+      throw new Error('Failed to get patient');
     }
 
-    return null;
+    const result = await response.json();
+    return result as Patient | null;
   } catch (error) {
     console.error('Error getting patient by ID:', error);
     throw error;

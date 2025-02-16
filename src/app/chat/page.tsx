@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import { useState, useRef, useEffect } from 'react';
 import { AnimatePresence } from 'framer-motion';
@@ -7,7 +7,8 @@ import { ChatMessage, Message } from '@/components/chat/ChatMessage';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { Container } from '@/components/ui/Container';
-
+import { availableTools } from '@/lib/tools';
+import { searchPatient, getPatientById } from '@/lib/qdrant';
 
 import OpenAI from 'openai';
 
@@ -25,24 +26,116 @@ export const getOpenAIClient = () => {
   });
 };
 
+const SYSTEM_MESSAGE = {
+  role: "system" as const,
+  content: `You are MediPal, an AI medical assistant. Help users with:
+- Understanding general medical concepts and terminology
+- Providing information about common health conditions and symptoms
+- Offering general wellness and preventive health advice
+- Explaining medical procedures and treatments in simple terms
+- Providing medication information and potential side effects
+- Answering questions about healthy lifestyle choices
+- Suggesting when to seek professional medical care
+
+Remember to:
+- Always clarify that you provide general information, not medical diagnosis
+- Encourage users to consult healthcare professionals for specific medical advice
+- Be clear about your limitations as an AI assistant
+- Maintain a compassionate and professional tone
+- Prioritize user privacy and confidentiality
+- Provide evidence-based information when possible
+- Use the available tools to look up patient information when needed`
+};
+
 const getChatCompletion = async (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => {
   const openai = getOpenAIClient();
   
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4-turbo-preview",
-      messages: [
-        {
-          role: "system",
-          content: "You are MediPal, an AI medical assistant. Provide accurate, helpful medical information while being clear about your limitations and encouraging users to seek professional medical advice for diagnosis and treatment."
-        },
-        ...messages
-      ],
+      messages: [SYSTEM_MESSAGE, ...messages],
       temperature: 0.7,
       max_tokens: 1000,
+      tools: availableTools,
+      tool_choice: "auto",
     });
 
-    return completion.choices[0].message.content;
+    const message = completion.choices[0].message;
+    
+    // Handle tool calls if present
+    if (message.tool_calls) {
+      const toolResults = await Promise.all(
+        message.tool_calls.map(async (toolCall) => {
+          const args = JSON.parse(toolCall.function.arguments);
+          
+          switch (toolCall.function.name) {
+            case 'get_patient_id':
+              try {
+                const patient = await searchPatient(
+                  args.firstName,
+                  args.lastName,
+                  args.dateOfBirth,
+                  args.medicareNo
+                );
+                return {
+                  tool_call_id: toolCall.id,
+                  output: JSON.stringify(patient ? { id: patient.id } : { error: 'Patient not found' })
+                };
+              } catch (error) {
+                return {
+                  tool_call_id: toolCall.id,
+                  output: JSON.stringify({ error: 'Error searching for patient' })
+                };
+              }
+            
+            case 'get_patient_details':
+              try {
+                const patient = await getPatientById(args.patientId);
+                return {
+                  tool_call_id: toolCall.id,
+                  output: JSON.stringify(patient || { error: 'Patient not found' })
+                };
+              } catch (error) {
+                return {
+                  tool_call_id: toolCall.id,
+                  output: JSON.stringify({ error: 'Error retrieving patient details' })
+                };
+              }
+            
+            default:
+              return {
+                tool_call_id: toolCall.id,
+                output: JSON.stringify({ error: 'Unknown tool' })
+              };
+          }
+        })
+      );
+
+      // Get the final response with tool outputs
+      const finalResponse = await openai.chat.completions.create({
+        model: "gpt-4-turbo-preview",
+        messages: [
+          SYSTEM_MESSAGE,
+          ...messages,
+          {
+            role: 'assistant',
+            content: message.content,
+            tool_calls: message.tool_calls,
+          },
+          ...toolResults.map(result => ({
+            role: 'tool' as const,
+            content: result.output,
+            tool_call_id: result.tool_call_id,
+          }))
+        ],
+        temperature: 0.7,
+        max_tokens: 1000,
+      });
+
+      return finalResponse.choices[0].message.content;
+    }
+
+    return message.content;
   } catch (error) {
     console.error('Error getting chat completion:', error);
     throw error;
